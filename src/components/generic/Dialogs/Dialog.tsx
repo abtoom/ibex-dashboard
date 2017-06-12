@@ -1,6 +1,6 @@
 import * as React from 'react';
 
-import { DataSourceConnector, IDataSourceDictionary } from '../../../data-sources'
+import { DataSourceConnector, IDataSourceDictionary } from '../../../data-sources';
 import ElementConnector from  '../../ElementConnector';
 
 import DialogsActions from './DialogsActions';
@@ -33,7 +33,7 @@ export default class Dialog extends React.PureComponent<IDialogProps, IDialogSta
 
   layouts = {};
 
-  constructor(props) {
+  constructor(props: IDialogProps) {
     super(props);
 
     this.state = DialogsStore.getState();
@@ -55,7 +55,7 @@ export default class Dialog extends React.PureComponent<IDialogProps, IDialogSta
     var layouts = ElementConnector.loadLayoutFromDashboard(this.props.dialogData, this.props.dashboard);
     
     this.layouts = layouts;
-    (this.state as any).layouts = { lg: layouts['lg'] };
+    (this.state as any).layouts = {  };
   }
 
   componentDidMount() {
@@ -68,8 +68,8 @@ export default class Dialog extends React.PureComponent<IDialogProps, IDialogSta
     var { dialogId, dialogArgs } = this.state;
     
     if (dialogData.id === dialogId) {
-      let datasourceId = 'dialog_' + dialogData.id;
-      let dataSource = DataSourceConnector.getDataSource(datasourceId);
+      let dataSourceId = 'dialog_' + dialogData.id;
+      let dataSource = DataSourceConnector.getDataSource(dataSourceId);
       dataSource.action.updateDependencies.defer(dialogArgs);
     }
   }
@@ -81,23 +81,25 @@ export default class Dialog extends React.PureComponent<IDialogProps, IDialogSta
       currentBreakpoint: breakpoint,
       layouts: layouts
     });
-  };
+  }
 
-  onChange(state) {
+  onChange(state: IDialogState) {
     var { dialogId, dialogArgs } = state;
     this.setState({ dialogId, dialogArgs });
   }
 
   closeDialog = () => {
     DialogsActions.closeDialog();
-  };
+  }
 
   render() {
     const { dialogData, dashboard } = this.props;
     const { id } = dialogData;
     const { dialogId, dialogArgs } = this.state;
-    let { title } = dialogArgs || { title : '' };
-    if (title === undefined) title = '';
+    let { title } = dialogArgs || { title: '' };
+    if (title === undefined) {
+      title = '';
+    }
     var visible = id === dialogId;
 
     if (!visible) {
@@ -105,13 +107,19 @@ export default class Dialog extends React.PureComponent<IDialogProps, IDialogSta
     }
 
     var { currentBreakpoint } = this.state;
-    var layout = this.state.layouts[currentBreakpoint];
+    var layout = null;
+    
+    if (!currentBreakpoint || !this.state.layouts[currentBreakpoint]) {
+      layout = this.layouts[currentBreakpoint || 'lg'];
+    } else {
+      layout = this.state.layouts[currentBreakpoint];
+    }
 
     // Creating visual elements
-    var elements = ElementConnector.loadElementsFromDashboard(dialogData, layout)
+    var elements = ElementConnector.loadElementsFromDashboard(dialogData, layout);
 
     let grid = {
-      className: "layout",
+      className: 'layout',
       rowHeight: dashboard.config.layout.rowHeight || 30,
       cols: dashboard.config.layout.cols,
       breakpoints: dashboard.config.layout.breakpoints
@@ -127,17 +135,22 @@ export default class Dialog extends React.PureComponent<IDialogProps, IDialogSta
         dialogStyle={{ width: dialogData.width || '80%' }}
         contentStyle={{ padding: '0', maxHeight: 'calc(100vh - 148px)' }}
       >
-        {/*<ResponsiveReactGridLayout
-          { ...grid }
-          layouts={ this.state.layouts }
+        <ResponsiveReactGridLayout
+          {...grid}
+
+          isDraggable={false}
+          isResizable={false}
+
+          layouts={this.layouts}
           onBreakpointChange={this.onBreakpointChange}
           // WidthProvider option
           measureBeforeMount={false}
           // I like to have it animate on mount. If you don't, delete `useCSSTransforms` (it's default `true`)
           // and set `measureBeforeMount={true}`.
-          useCSSTransforms={this.state.mounted}>*/}
-          { elements }
-        {/*</ResponsiveReactGridLayout>*/}
+          useCSSTransforms={this.state.mounted}
+        >
+          {elements}
+        </ResponsiveReactGridLayout>
       </MDDialog>
     );
   }

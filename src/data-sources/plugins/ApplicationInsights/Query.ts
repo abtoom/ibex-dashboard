@@ -1,16 +1,14 @@
-
-//import * as $ from 'jquery';
 import * as request from 'xhr-request';
-import * as _ from 'lodash';
 import { DataSourcePlugin, IOptions } from '../DataSourcePlugin';
 import { appInsightsUri } from './common';
 import ApplicationInsightsConnection from '../../connections/application-insights';
+import { DataSourceConnector } from '../../DataSourceConnector';
 
 let connectionType = new ApplicationInsightsConnection();
 
 interface IQueryParams {
   query?: ((dependencies: any) => string) | string;
-  mappings?: (string|object)[];
+  mappings?: (string | object)[];
   table?: string;
   queries?: IDictionary;
   filters?: Array<IFilterParams>;
@@ -23,22 +21,18 @@ interface IFilterParams {
 }
 
 export default class ApplicationInsightsQuery extends DataSourcePlugin<IQueryParams> {
-
   type = 'ApplicationInsights-Query';
   defaultProperty = 'values';
   connectionType = connectionType.type;
 
   /**
    * @param options - Options object
+   * @param connections - List of available connections
    */
   constructor(options: IOptions<IQueryParams>, connections: IDict<IStringDictionary>) {
     super(options, connections);
-
-    var props = this._props;
-    var params = props.params;
-    
-    // Validating params
-    this.validateParams(props, params);
+    this.validateTimespan(this._props);
+    this.validateParams(this._props.params);
   }
 
   /**
@@ -46,9 +40,12 @@ export default class ApplicationInsightsQuery extends DataSourcePlugin<IQueryPar
    * @param {object} dependencies
    * @param {function} callback
    */
-  updateDependencies(dependencies) {
-    var emptyDependency = _.find(_.keys(this._props.dependencies), dependencyKey => {
-      return typeof dependencies[dependencyKey] === 'undefined';
+  updateDependencies(dependencies: any) {
+    let emptyDependency = false;
+    Object.keys(this._props.dependencies).forEach((key) => {
+      if (typeof dependencies[key] === 'undefined') {
+        emptyDependency = true;
+      }
     });
 
     // If one of the dependencies is not supplied, do not run the query
@@ -81,79 +78,89 @@ export default class ApplicationInsightsQuery extends DataSourcePlugin<IQueryPar
 
     if (!isForked) {
       let queryKey = this._props.id;
-      query = this.compileQueryWithFilters(params.query, dependencies, isForked, queryKey, filters);
+      query = this.query(params.query, dependencies, isForked, queryKey, filters);
       mappings.push(params.mappings);
     } else {
       queries = params.queries || {};
       table = params.table;
-      query = ` ${params.table} | fork `;
-      _.keys(queries).every(queryKey => {
-        let queryParams = queries[queryKey];
+      query = ` ${table} | fork `;
+
+      Object.keys(queries).forEach((key) => {
+        let queryParams = queries[key];
         filters = queryParams.filters || [];
-        tableNames.push(queryKey);
+        tableNames.push(key);
         mappings.push(queryParams.mappings);
-        query += this.compileQueryWithFilters(queryParams.query, dependencies, isForked, queryKey, filters);
+        query += this.query(queryParams.query, dependencies, isForked, key, filters);
         return true;
       });
     }
 
-    var queryspan = queryTimespan;
-
-    var url = `${appInsightsUri}/${appId}/query?timespan=${queryspan}&query=${encodeURIComponent(query)}`;
+    var url = `${appInsightsUri}/${appId}/query?timespan=${queryTimespan}`;
 
     return (dispatch) => {
-
-      request(url, {
-          method: "GET",
+      request(
+        url, 
+        {
+          method: 'POST',
           json: true,
           headers: {
-            "x-api-key": apiKey
+            'x-api-key': apiKey
+          },
+          body: {
+            query
           }
-        }, (error, json) => {
-
-          if (error) {
-            return this.failure(error);
+        }, 
+        (error, json) => {
+          if (error) { return this.failure(error); }
+          if (json.error) {
+            return json.error.code === 'PathNotFoundError' ? 
+              this.failure(new Error(
+                `There was a problem getting results from Application Insights. Make sure the connection string is food.
+                ${JSON.stringify(json)}`)) : 
+              this.failure(json.error);
           }
-
-          let q = query;
 
           // Check if result is valid
           let tables = this.mapAllTables(json, mappings);
-          let resultStatus: IQueryStatus[] = _.last(tables);
+          let resultStatus: IQueryStatus[] = tables[tables.length - 1];
           if (!resultStatus || !resultStatus.length) {
             return dispatch(json);
           }
 
           // Map tables to appropriate results
-          var resultTables = tables.filter((table, idx) => {
-            return idx < resultStatus.length && resultStatus[idx].Kind === 'QueryResult';
+          var resultTables = tables.filter((aTable, idx) => {
+            return idx < resultStatus.length && 
+                    (resultStatus[idx].Kind === 'QueryResult' || resultStatus[idx].Kind === 'PrimaryResults');
           });
 
           let returnedResults = {
             values: (resultTables.length && resultTables[0]) || null
           };
 
-          tableNames.forEach((table: string, idx: number) => {
-            returnedResults[table] = resultTables.length > idx ? resultTables[idx] : null;
-
+          tableNames.forEach((aTable: string, idx: number) => {
+            returnedResults[aTable] = resultTables.length > idx ? resultTables[idx] : null;
+            // Get state for filter selection
+            const prevState = DataSourceConnector.getDataSource(this._props.id).store.getState();
             // Extracting calculated values
-            let calc = queries[table].calculated;
+            let calc = queries[aTable].calculated;
             if (typeof calc === 'function') {
-              var additionalValues = calc(returnedResults[table], dependencies) || {};
-              _.extend(returnedResults, additionalValues);
+              var additionalValues = calc(returnedResults[aTable], dependencies, prevState) || {};
+              Object.assign(returnedResults, additionalValues);
             }
           });
 
-          return dispatch(returnedResults);          
-        });
-    }
+          return dispatch(returnedResults);
+        }
+      );
+    };
   }
 
   updateSelectedValues(dependencies: IDictionary, selectedValues: any) {
-    if ( Array.isArray(selectedValues) ){
-      return _.extend(dependencies, {"selectedValues":selectedValues});
+    if (Array.isArray(selectedValues)) {
+      return Object.assign(dependencies, { 'selectedValues': selectedValues });
+    } else {
+      return Object.assign(dependencies, { ... selectedValues });
     }
-    return _.extend(dependencies, selectedValues);
   }
 
   private mapAllTables(results: IQueryResults, mappings: Array<IDictionary>): any[][] {
@@ -181,9 +188,9 @@ export default class ApplicationInsightsQuery extends DataSourcePlugin<IQueryPar
       });
 
       // Going over user defined mappings of the values
-      _.keys(mappings).forEach(col => {
-        row[col] = 
-          typeof mappings[col] === 'function' ? 
+      Object.keys(mappings).forEach(col => {
+        row[col] =
+          typeof mappings[col] === 'function' ?
             mappings[col](row[col], row, rowIdx) :
             mappings[col];
       });
@@ -196,10 +203,10 @@ export default class ApplicationInsightsQuery extends DataSourcePlugin<IQueryPar
     return typeof query === 'function' ? query(dependencies) : query;
   }
 
-  private compileQueryWithFilters(query: any, dependencies: any, isForked: boolean, queryKey: string, filters: IFilterParams[]): string {
+  private query(query: any, dependencies: any, isForked: boolean, queryKey: string, filters: IFilterParams[]): string {
     let q = this.compileQuery(query, dependencies);
     // Don't filter a filter query, or no filters specified
-    if (queryKey.startsWith("filter") || filters === undefined || filters.length === 0) {
+    if (queryKey.startsWith('filter') || filters === undefined || filters.length === 0) {
       return this.formatQuery(q, isForked);
     }
     // Apply selected filters to connected query
@@ -207,8 +214,8 @@ export default class ApplicationInsightsQuery extends DataSourcePlugin<IQueryPar
       const { dependency, queryProperty } = filter;
       const selectedFilters = dependencies[dependency] || [];
       if (selectedFilters.length > 0) {
-        const filter = "where " + selectedFilters.map((value) => `${queryProperty}=="${value}"`).join(' or ') + " | ";
-        q = ` ${filter} \n ${q} `;
+        const f = 'where ' + selectedFilters.map((value) => `${queryProperty}=="${value}"`).join(' or ') + ' | ';
+        q = ` ${f} \n ${q} `;
         return true;
       }
       return false;
@@ -220,12 +227,13 @@ export default class ApplicationInsightsQuery extends DataSourcePlugin<IQueryPar
     return isForked ? ` (${query}) \n\n` : query;
   }
 
-  private validateParams(props: any, params: any): void {
-
+  private validateTimespan(props: any) {
     if (!props.dependencies.queryTimespan) {
       throw new Error('AIAnalyticsEvents requires dependencies: timespan; queryTimespan');
     }
+  }
 
+  private validateParams(params: IQueryParams): void {
     if (params.query) {
       if (params.table || params.queries) {
         throw new Error('Application Insights query should either have { query } or { table, queries } under params.');
@@ -237,7 +245,9 @@ export default class ApplicationInsightsQuery extends DataSourcePlugin<IQueryPar
 
     if (params.table) {
       if (!params.queries) {
-        return this.failure(new Error('Application Insights query should either have { query } or { table, queries } under params.'));
+        return this.failure(
+          new Error('Application Insights query should either have { query } or { table, queries } under params.')
+        );
       }
       if (typeof params.table !== 'string' || typeof params.queries !== 'object' || Array.isArray(params.queries)) {
         throw new Error('{ table, queries } should be of types { "string", { query1: {...}, query2: {...} }  }.');
